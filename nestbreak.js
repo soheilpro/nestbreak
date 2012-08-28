@@ -1,7 +1,9 @@
 var http = require('http');
+var https = require('https');
 var url = require('url');
 var querystring = require('querystring');
-var oauth = require('./oauth').OAuth;
+var fs = require('fs');
+var oauth = require('oauth').OAuth;
 var settings = require('./settings').settings;
 
 function copy(source, destination) {
@@ -10,6 +12,22 @@ function copy(source, destination) {
             destination[item] = source[item];
 
     return destination;
+}
+
+function getUserByUsername(username) {
+    for (var i = settings.users.length - 1; i >= 0; i--)
+        if (settings.users[i].username.toLowerCase() === username.toLowerCase())
+            return settings.users[i];
+    
+    return null;
+}
+
+function getUserByAccessToken(access_token) {
+    for (var i = settings.users.length - 1; i >= 0; i--)
+        if (settings.users[i].access_token === access_token)
+            return settings.users[i];
+    
+    return null;
 }
 
 function parseAuthorizationHeader(header) {
@@ -46,11 +64,10 @@ function generateOAuthSignature(method, requestUrl, oauthParams, bodyParams, que
     copy(bodyParams, params);
     copy(queryParams, params);
 
-    var consumerSecret = settings.oauth.secret_key;
-    var signatureMethod = oauthParams['oauth_signature_method'];
-    var tokenSecret = '';
+    var oa = new oauth(null, null, settings.app.consumer_key, settings.app.consumer_secret, "1.0", null, oauthParams['oauth_signature_method']);
+    var user = getUserByAccessToken(oauthParams.oauth_token);
 
-    return new oauth(consumerSecret, signatureMethod).getSignature(method, requestUrl, params, tokenSecret);
+    return oa._getSignature(method, requestUrl, oa._normaliseRequestParams(params), user.access_token_secret);
 }
 
 function generateAuthorizationHeader(request, body, requestUrl) {
@@ -59,7 +76,7 @@ function generateAuthorizationHeader(request, body, requestUrl) {
     var queryParams = url.parse(request.url, true).query;
 
     delete oauthParams['oauth_signature'];
-    oauthParams['oauth_consumer_key'] = settings.oauth.consumer_key;
+    oauthParams['oauth_consumer_key'] = settings.app.consumer_key;
     oauthParams['oauth_signature'] = generateOAuthSignature(request.method, requestUrl, oauthParams, bodyParams, queryParams);
 
     return createAuthorizationHeader(oauthParams);
@@ -73,49 +90,53 @@ var requestListener = function(inRequest, inResponse) {
     });
 
     inRequest.on('end', function() {
-        console.log();
-        console.log('=== Original Request ===');
-        console.log(inRequest.method + ' ' + inRequest.url);
-        console.log(inRequest.headers);
-        console.log(inRequestBody);
+        if (inRequest.method === 'POST' && inRequest.url === '/oauth/access_token') {
+            var params = querystring.parse(inRequestBody);
+            var user = getUserByUsername(params.x_auth_username);
 
-        var baseUrl = 'https://api.twitter.com';
-        var newUrl = url.parse(baseUrl + inRequest.url);
+            if (user === null || user.password !== params.x_auth_password) {
+                inResponse.writeHead(401);
+                inResponse.end();
+                return;
+            }
 
-        var newHeaders = copy(inRequest.headers, {});
-        newHeaders['host'] = newUrl.hostname;
-        newHeaders['authorization'] = generateAuthorizationHeader(inRequest, inRequestBody, url.format(newUrl));
-        delete newHeaders['accept-encoding'];
+            var response = {
+                oauth_token: user.access_token,
+                oauth_token_secret: user.access_token_secret,
+            };
 
-        console.log();
-        console.log('=== New Request ===');
-        console.log(inRequest.method + ' ' + newUrl.path);
-        console.log(newHeaders);
-        console.log(inRequestBody);
+            inResponse.setHeader('content-type', 'application/x-www-form-urlencoded');
+            inResponse.write(querystring.stringify(response));
+            inResponse.end();
+        }
+        else {
+            var baseUrl = 'https://api.twitter.com';
+            var newUrl = url.parse(baseUrl + inRequest.url);
 
-        var client = http.createClient(newUrl.port || 80, newUrl.hostname);
-        var outRequest = client.request(inRequest.method, newUrl.path || '/', newHeaders);
-        outRequest.write(inRequestBody);
-        outRequest.end();
+            var outHeaders = copy(inRequest.headers, {});
+            outHeaders['host'] = newUrl.hostname;
 
-        outRequest.on('response', function(outResponse){
-            inResponse.writeHead(outResponse.statusCode, outResponse.headers);
-            outResponse.pipe(inResponse);
+            if (outHeaders['authorization'])
+                outHeaders['authorization'] = generateAuthorizationHeader(inRequest, inRequestBody, url.format(newUrl));
 
-            var outResponseBody = '';
+            var options = {
+                host: newUrl.host,
+                port: newUrl.port || 443,
+                path: newUrl.path,
+                method: inRequest.method,
+                headers: outHeaders,
+            };
 
-            outResponse.on('data', function(chunk) {
-                outResponseBody += chunk;
+            var outRequest = https.request(options, function(outResponse) {
+                console.log(outResponse.statusCode + ' ' + inRequest.method + ' ' + inRequest.url);
+
+                inResponse.writeHead(outResponse.statusCode, outResponse.headers);
+                outResponse.pipe(inResponse);
             });
 
-            outResponse.on('end', function() {
-                console.log();
-                console.log('=== Reponse ===');
-                console.log(outResponse.statusCode);
-                console.log(outResponse.headers);
-                console.log(outResponseBody);
-            });
-        })
+            outRequest.write(inRequestBody);
+            outRequest.end();
+        }
     });
 };
 
