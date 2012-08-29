@@ -3,22 +3,21 @@ nestbreak
 A Twitter API proxy in Node.js.
 
 Requirements
-----------
+------------
 [Node.js](http://nodejs.org)
 
-Status
--------
-Not working now.
-
-How to use?
-----------
-1. Run the server:
+Setup
+-----
+1. Configure settings.js using the instructions given in the comments.
+2. Run the server:
 
     node nestbreak
 
-2. Set your Twitter client's API Root URL to:
+3. Configure your Twitter client to use the following address as the API Root:
 
     http://<i>server</i>:8080
+
+4. In your client, add a new user with the same username and password that you've specified in settings.js.
 
 Author
 ------
